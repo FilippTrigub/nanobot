@@ -1,0 +1,41 @@
+{
+  "providers": {
+    "azure_openai": {
+      "apiKey": "${AZURE_OPENAI_API_KEY}",
+      "apiBase": "https://filip-mfmovghf-swedencentral.cognitiveservices.azure.com",
+      "defaultModel": "gpt-5.4"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "azure_openai",
+      "model": "gpt-5.4",
+      "workspace": "/home/nanobot/.nanobot-admin/workspace",
+      "idleCompactAfterMinutes": 15,
+      "timezone": "UTC"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "${TELEGRAM_ADMIN_TOKEN}",
+      "allowFrom": ["*"],
+      "groupPolicy": "mention"
+    }
+  },
+  "tools": {
+    "mcpServers": {
+      "frank-ingest": {
+        "url": "https://quincy.bravesea-b11173b3.swedencentral.azurecontainerapps.io/api/mcp",
+        "headers": {
+          "x-api-key": "${INGEST_API_KEY}"
+        },
+        "toolTimeout": 180
+      }
+    }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
+  }
+}
