@@ -56,6 +56,18 @@ All tools are exposed by the frank-ingest MCP server at `/api/mcp`. The bot call
 
 All admin tools accept an optional `campaign_id` argument. When omitted they fall back to `DEFAULT_CAMPAIGN_ID` in the frank-ingest ACA environment — set this env var to avoid specifying a UUID on every message.
 
+### Telegram volunteer tools (shared action wrappers, 2026-06-28)
+
+The Telegram volunteer MCP tools still exist in frank-ingest and keep their Telegram-facing schemas:
+
+| Tool | Description |
+|------|-------------|
+| `telegram_get_my_lists` | Return walk/call lists assigned to the resolved volunteer. |
+| `telegram_get_list_voters` | Return paginated voters for an assigned walk/call list, including prior result data. |
+| `telegram_submit_result` | Submit or update a walk/call contact result for a voter on an assigned list. |
+
+Nanobot supplies the sender's numeric Telegram ID to these tools. Frank-ingest resolves that `telegram_id` to the app `users.id`, then calls shared trusted-user volunteer bot actions in `lib/volunteer-bot-actions.ts`. The shared actions own list lookup, voter paging access checks, and result submission; Telegram wrappers own Telegram identity resolution and MCP response wrapping. The web volunteer assistant is separate: it uses assistant-ui on `/volunteer`, Auth.js `session.user.id` for identity, and the same shared actions through `/api/volunteer/chat`. V1 supports volunteer list lookup, voter paging, and result submission only; no admin chat exists.
+
 ---
 
 ## Auth Flow
@@ -65,6 +77,7 @@ The Telegram bot → nanobot → MCP HTTP bridge at `/api/mcp` → frank-ingest 
 - **Telegram auth**: allowFrom list in config gates which Telegram user IDs can send messages.
 - **MCP auth**: every request carries `x-api-key: ${INGEST_API_KEY}` header. Frank-ingest's `proxy.ts` validates this key before forwarding to the MCP server. The MCP server also validates it independently.
 - **Route auth**: admin operation routes use `requireCampaignAdminOrMachine` — sessionless requests (no Auth.js session cookie) that have passed the API key gate are trusted as machine clients. `*_by_user_id` DB columns are stored as `null` for machine-originated writes.
+- **Volunteer Telegram tools**: frank-ingest resolves the supplied Telegram ID to an app user before invoking shared trusted-user volunteer bot actions. Web volunteer chat does not use Telegram IDs; it uses Auth.js `session.user.id`.
 
 ---
 
@@ -85,6 +98,11 @@ MCP server source: `frank-ingest/mcp/server.ts` and `frank-ingest/mcp/tools/`.
 - Created `mcp/tools/api-client.ts` in frank-ingest (shared fetch helpers)
 - `DEFAULT_CAMPAIGN_ID` env var required on frank-ingest ACA for campaign ID fallback
 - `toolTimeout: 180` already set in `config.deploy.json` (covers precinct analytics latency)
+
+### 2026-06-28 — Volunteer tool sharing with web assistant
+- Telegram volunteer MCP tools still expose Telegram schemas, resolve `telegram_id` to `users.id`, and now call shared trusted-user volunteer bot actions in frank-ingest.
+- The new frank-ingest web volunteer assistant uses assistant-ui and Auth.js web identity through `/api/volunteer/chat`; it shares the same volunteer bot action logic for list lookup, voter paging, and result submission.
+- V1 has no admin chat and does not treat Telegram IDs as web user identity.
 
 ### Initial setup (date unknown)
 - Nanobot instance configured with Azure OpenAI (gpt-5.4) and Telegram channel
