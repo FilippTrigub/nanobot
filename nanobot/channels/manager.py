@@ -56,7 +56,9 @@ class ChannelManager:
         bus: MessageBus,
         *,
         session_manager: "SessionManager | None" = None,
+        cron_service: Any | None = None,
         webui_runtime_model_name: Callable[[], str | None] | None = None,
+        webui_cron_pending_job_ids: Callable[[str], set[str]] | None = None,
         webui_static_dist: bool = True,
         webui_runtime_surface: str = "browser",
         webui_runtime_capabilities: dict[str, Any] | None = None,
@@ -64,7 +66,9 @@ class ChannelManager:
         self.config = config
         self.bus = bus
         self._session_manager = session_manager
+        self._cron_service = cron_service
         self._webui_runtime_model_name = webui_runtime_model_name
+        self._webui_cron_pending_job_ids = webui_cron_pending_job_ids
         self._webui_static_dist = webui_static_dist
         self._webui_runtime_surface = webui_runtime_surface
         self._webui_runtime_capabilities = dict(webui_runtime_capabilities or {})
@@ -77,11 +81,6 @@ class ChannelManager:
     def _init_channels(self) -> None:
         """Initialize channels discovered via pkgutil scan + entry_points plugins."""
         from nanobot.channels.registry import discover_channel_names, discover_enabled
-
-        transcription_provider = self.config.channels.transcription_provider
-        transcription_key = self._resolve_transcription_key(transcription_provider)
-        transcription_base = self._resolve_transcription_base(transcription_provider)
-        transcription_language = self.config.channels.transcription_language
 
         # Collect enabled module names first, then only import those.
         # Channel configs live in ChannelsConfig's extra fields (via
@@ -111,22 +110,29 @@ class ChannelManager:
             try:
                 kwargs: dict[str, Any] = {}
                 if cls.name == "websocket":
-                    if self._session_manager is not None:
-                        kwargs["session_manager"] = self._session_manager
-                        static_path = _default_webui_dist() if self._webui_static_dist else None
-                        if static_path is not None:
-                            kwargs["static_dist_path"] = static_path
-                    kwargs["workspace_path"] = self.config.workspace_path
-                    kwargs["restrict_to_workspace"] = self.config.tools.restrict_to_workspace
-                    if self._webui_runtime_model_name is not None:
-                        kwargs["runtime_model_name"] = self._webui_runtime_model_name
-                    kwargs["runtime_surface"] = self._webui_runtime_surface
-                    kwargs["runtime_capabilities_overrides"] = self._webui_runtime_capabilities
+                    from nanobot.channels.websocket import WebSocketConfig
+                    from nanobot.webui.gateway_services import build_gateway_services
+
+                    parsed = WebSocketConfig.model_validate(section)
+                    static_path = _default_webui_dist() if self._webui_static_dist else None
+                    workspace = Path(self.config.workspace_path)
+                    gateway = build_gateway_services(
+                        config=parsed,
+                        bus=self.bus,
+                        session_manager=self._session_manager,
+                        static_dist_path=static_path,
+                        workspace_path=workspace,
+                        default_restrict_to_workspace=self.config.tools.restrict_to_workspace,
+                        disabled_skills=set(self.config.agents.defaults.disabled_skills),
+                        runtime_model_name=self._webui_runtime_model_name,
+                        runtime_surface=self._webui_runtime_surface,
+                        runtime_capabilities_overrides=self._webui_runtime_capabilities,
+                        cron_service=self._cron_service,
+                        cron_pending_job_ids=self._webui_cron_pending_job_ids,
+                        logger=logger,
+                    )
+                    kwargs["gateway"] = gateway
                 channel = cls(section, self.bus, **kwargs)
-                channel.transcription_provider = transcription_provider
-                channel.transcription_api_key = transcription_key
-                channel.transcription_api_base = transcription_base
-                channel.transcription_language = transcription_language
                 channel.send_progress = self._resolve_bool_override(
                     section, "send_progress", self.config.channels.send_progress,
                 )
@@ -142,24 +148,6 @@ class ChannelManager:
                 logger.warning("{} channel not available: {}", name, e)
 
         self._validate_allow_from()
-
-    def _resolve_transcription_key(self, provider: str) -> str:
-        """Pick the API key for the configured transcription provider."""
-        try:
-            if provider == "openai":
-                return self.config.providers.openai.api_key
-            return self.config.providers.groq.api_key
-        except AttributeError:
-            return ""
-
-    def _resolve_transcription_base(self, provider: str) -> str:
-        """Pick the API base URL for the configured transcription provider."""
-        try:
-            if provider == "openai":
-                return self.config.providers.openai.api_base or ""
-            return self.config.providers.groq.api_base or ""
-        except AttributeError:
-            return ""
 
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():
@@ -183,7 +171,7 @@ class ChannelManager:
         """Return whether progress (or tool-hints) may be sent to *channel_name*."""
         ch = self.channels.get(channel_name)
         if ch is None:
-            logger.warning("Progress check for unknown channel: {}", channel_name)
+            logger.debug("Progress check for unknown channel: {}", channel_name)
             return False
         return ch.send_tool_hints if tool_hint else ch.send_progress
 
@@ -264,6 +252,10 @@ class ChannelManager:
             try:
                 await channel.stop()
                 logger.info("Stopped {} channel", name)
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                logger.debug("Channel {} stop task was already cancelled", name)
             except Exception:
                 logger.exception("Error stopping {}", name)
 
@@ -404,7 +396,7 @@ class ChannelManager:
     def _coalesce_stream_deltas(
         self, first_msg: OutboundMessage
     ) -> tuple[OutboundMessage, list[OutboundMessage]]:
-        """Merge consecutive _stream_delta messages for the same (channel, chat_id).
+        """Merge consecutive _stream_delta messages for the same (channel, chat_id, _stream_id).
 
         This reduces the number of API calls when the queue has accumulated multiple
         deltas, which happens when LLM generates faster than the channel can process.
@@ -412,7 +404,8 @@ class ChannelManager:
         Returns:
             tuple of (merged_message, list_of_non_matching_messages)
         """
-        target_key = (first_msg.channel, first_msg.chat_id)
+        first_metadata = first_msg.metadata or {}
+        target_key = (first_msg.channel, first_msg.chat_id, first_metadata.get("_stream_id"))
         combined_content = first_msg.content
         final_metadata = dict(first_msg.metadata or {})
         non_matching: list[OutboundMessage] = []
@@ -426,9 +419,14 @@ class ChannelManager:
                 break
 
             # Check if this message belongs to the same stream
-            same_target = (next_msg.channel, next_msg.chat_id) == target_key
-            is_delta = next_msg.metadata and next_msg.metadata.get("_stream_delta")
-            is_end = next_msg.metadata and next_msg.metadata.get("_stream_end")
+            next_metadata = next_msg.metadata or {}
+            same_target = (
+                next_msg.channel,
+                next_msg.chat_id,
+                next_metadata.get("_stream_id"),
+            ) == target_key
+            is_delta = next_metadata.get("_stream_delta")
+            is_end = next_metadata.get("_stream_end")
 
             if same_target and is_delta and not final_metadata.get("_stream_end"):
                 # Accumulate content
