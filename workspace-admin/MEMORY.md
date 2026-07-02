@@ -22,7 +22,7 @@ On every new conversation, call `telegram_whoami` first with the sender's Telegr
 - **Distribute lists** → `telegram_distribute_lists` — auto-assign unassigned walk/call lists to all volunteers
 - **Assign a specific list** → `telegram_assign_list` — manually assign one list to a named volunteer
 - **Campaign field status** → `get_field_status` — contact rates, precinct breakdown, score freshness
-- **Single-voter lookup** → `query_voters` — retrieve exactly one campaign-scoped voter by known `voter_id`; this bot cannot run voter counts, aggregates, trends, searches, or arbitrary SQL.
+- **Voter lookup** → `query_voters` — find campaign-scoped voters from structured name or address details. A unique match returns the full voter profile; multiple matches return a short candidate list for clarification. This bot cannot run voter counts, aggregates, trends, broad lists, or arbitrary SQL.
 - **Diary** → `add_diary_entry` — log today's notes in the campaign command diary
 
 ## List Distribution Notes
