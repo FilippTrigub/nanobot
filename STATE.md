@@ -38,9 +38,9 @@ All tools are exposed by the frank-ingest MCP server at `/api/mcp`. The bot call
 | Tool | Description |
 |------|-------------|
 | `create_upload` | Initiate a voter file upload, returns SAS URL |
-| `get_schema` | Return the voters table column list |
+| `get_voters_schema` | Return the voters table column list |
 | `get_source_status` | Return current voter source status |
-| `query_voters` | Read-only SQL queries against the voter universe (column whitelist) |
+| `query_voters` | Retrieve exactly one campaign-scoped voter by known `voter_id`; does not run SQL, counts, aggregates, trends, searches, or list queries |
 | `run_pipeline` | Trigger parse → validate → ingest pipeline |
 
 ### Admin operation tools (added 2026-06-26)
@@ -103,6 +103,11 @@ MCP server source: `frank-ingest/mcp/server.ts` and `frank-ingest/mcp/tools/`.
 - Telegram volunteer MCP tools still expose Telegram schemas, resolve `telegram_id` to `users.id`, and now call shared trusted-user volunteer bot actions in frank-ingest.
 - The new frank-ingest web volunteer assistant uses assistant-ui and Auth.js web identity through `/api/volunteer/chat`; it shares the same volunteer bot action logic for list lookup, voter paging, and result submission.
 - V1 has no admin chat and does not treat Telegram IDs as web user identity.
+
+### 2026-07-02 — Admin voter query narrowed
+- frank-ingest `query_voters` is now a campaign-scoped single-voter lookup tool keyed by exact `voter_id`; it no longer accepts arbitrary read-only SQL.
+- Admin bot memory now tells the model to refuse voter counts, aggregates, trends, searches, and list queries through this tool.
+- Use `get_voters_schema` only to explain available voter fields, not to build SQL for `query_voters`.
 
 ### Initial setup (date unknown)
 - Nanobot instance configured with Azure OpenAI (gpt-5.4) and Telegram channel
