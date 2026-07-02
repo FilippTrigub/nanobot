@@ -1,0 +1,97 @@
+name: Deploy to Azure Container App
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - docs/**
+      - "*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  ACR_LOGIN_SERVER: ${{ vars.ACR_NAME }}.azurecr.io
+  IMAGE_NAME: ${{ vars.IMAGE_NAME || 'nanobot' }}
+  IMAGE_TAG: sha-${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get ACR access token
+        id: acr-token
+        shell: bash
+        run: |
+          token="$(
+            az acr login \
+              --name "${{ vars.ACR_NAME }}" \
+              --expose-token \
+              --output tsv \
+              --query accessToken
+          )"
+
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: 00000000-0000-0000-0000-000000000000
+          password: ${{ steps.acr-token.outputs.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Container App
+        shell: bash
+        run: |
+          image="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          revision_suffix="sha-${GITHUB_SHA::12}"
+
+          az containerapp update \
+            --name "${{ vars.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "$image" \
+            --revision-suffix "$revision_suffix"
+
+      - name: Verify active revision
+        shell: bash
+        run: |
+          az containerapp revision list \
+            --name "${{ vars.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --all \
+            --query '[].{name:name, active:properties.active, trafficWeight:properties.trafficWeight, replicas:properties.replicas, healthState:properties.healthState, image:properties.template.containers[0].image}' \
+            --output table
