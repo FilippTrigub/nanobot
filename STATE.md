@@ -54,6 +54,19 @@ All tools are exposed by the frank-ingest MCP server at `/api/mcp`. The bot call
 | `get_field_status` | Universe totals, walk/call/mail contact rates, score freshness, top 20 precincts by voter count. May take up to 90s. |
 | `get_precinct` | Full analytics detail for precincts matching a code or name substring. May take up to 90s. |
 
+### Analytics & targeting tools (added 2026-07-08)
+
+| Tool | Description |
+|------|-------------|
+| `analyze_voters` | Structured aggregate analytics over the voter universe or a target group: counts, breakdowns, pct, households, avg target score. Filter is react-querybuilder JSON; election-history questions use the `turnout` block (`last_n`/`elections`, `kind`, `vote_filter`, `min_voted`). Aggregates only, group rows capped — never per-voter lists. Returns `scores_not_ready` while a score refresh runs. Can take up to ~60s. |
+| `analyze_results` | Aggregate walk/call/mail contact results: totals, unique voters, avg support score; group by channel/status/support_score/precinct/day/week. support_score is 1-5 (>=4 ≈ positive); mail's positive outcome is status `responded`. |
+| `list_target_groups` | Default universe + all target groups with scoring summary, threshold/limit, and `scores_freshness`. Check freshness here before generating lists. |
+| `get_target_group` | Full detail for one group: rules, scoring config, freshness, member estimate. |
+| `create_target_group` | Create a voter segment: filter rules + scoring (presets `base`/`frequent_voter`/`activation_target`/`general_election_only`/`last_election_required` or explicit v2 components) + threshold + top-N limit. Starts an async score refresh. No delete tool. |
+| `update_target_group` | Partial update of a target group (omitted fields preserved). Primary universe not editable. Scoring changes re-trigger the score refresh. |
+| `generate_lists` | Generate/regenerate walk, call, or mail lists for a group or the default universe. Async: returns `job_id`. Regeneration archives previous generated lists and clears volunteer assignments; recorded results survive. |
+| `get_list_generation_job` | Poll an async list generation job (`running`/`complete`/`failed`, progress, result summary). |
+
 All admin tools accept an optional `campaign_id` argument. When omitted they fall back to `DEFAULT_CAMPAIGN_ID` in the frank-ingest ACA environment — set this env var to avoid specifying a UUID on every message.
 
 ### Telegram volunteer tools (shared action wrappers, 2026-06-28)
@@ -90,6 +103,13 @@ MCP server source: `frank-ingest/mcp/server.ts` and `frank-ingest/mcp/tools/`.
 ---
 
 ## Changelog
+
+### 2026-07-08 — Analytics, target groups, list generation
+- 8 new MCP tools (see "Analytics & targeting tools" above): `analyze_voters`, `analyze_results`, `list_target_groups`, `get_target_group`, `create_target_group`, `update_target_group`, `generate_lists`, `get_list_generation_job`.
+- Shared logic lives in frank-ingest `lib/voter-analytics.ts` and `lib/target-group-actions.ts`; the same tools were added to the frank-ingest web admin assistant (`/campaigns/[id]/assistant`), which also raised its tool-round cap from 3 to 8.
+- `workspace-admin/MEMORY.md` updated: the bot now answers counts/aggregates/trends via `analyze_voters`/`analyze_results` (the old "cannot run aggregates" rule now applies only to `query_voters`), with recipes for the target-group → freshness → generate-lists workflow.
+- frank-ingest list routes (`/api/walk-lists`, `/api/call-lists`, `/api/mail-lists`, `/api/list-generation-jobs/[id]`) now accept machine clients (`requireCampaignAdminOrMachine`).
+- `toolTimeout: 180` in `config.deploy.json` already covers analytics latency (voter aggregates measured ~40-50s on the current DB tier; server-side statement timeout is 120s).
 
 ### 2026-06-26 — Admin bot tool extension
 - Added 6 new MCP tools to frank-ingest MCP server (see Tool Inventory above)
