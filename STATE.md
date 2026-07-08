@@ -88,9 +88,9 @@ Nanobot supplies the sender's numeric Telegram ID to these tools. Frank-ingest r
 The Telegram bot → nanobot → MCP HTTP bridge at `/api/mcp` → frank-ingest route handlers.
 
 - **Telegram auth**: allowFrom list in config gates which Telegram user IDs can send messages.
-- **MCP auth**: every request carries `x-api-key: ${INGEST_API_KEY}` header. Frank-ingest's `proxy.ts` validates this key before forwarding to the MCP server. The MCP server also validates it independently.
-- **Route auth**: admin operation routes use `requireCampaignAdminOrMachine` — sessionless requests (no Auth.js session cookie) that have passed the API key gate are trusted as machine clients. `*_by_user_id` DB columns are stored as `null` for machine-originated writes.
-- **Volunteer Telegram tools**: frank-ingest resolves the supplied Telegram ID to an app user before invoking shared trusted-user volunteer bot actions. Web volunteer chat does not use Telegram IDs; it uses Auth.js `session.user.id`.
+- **MCP auth / campaign scope (updated 2026-07-08)**: every request carries `x-api-key`. Frank-ingest's `proxy.ts` and the MCP server (`mcp/server.ts`) each independently resolve that key to a *scope* via `lib/campaign-api-keys.ts`'s `resolveMachineScope`: the existing unscoped `INGEST_API_KEY` (`config.deploy.json`'s current value) resolves to an **operator** scope — unchanged behavior, `campaign_id` is whatever the tool call passes or `DEFAULT_CAMPAIGN_ID`. A **campaign-scoped key** (minted per-deployment via frank-ingest's `scripts/create-campaign-key.mjs <campaign-uuid>`) pins every tool call to that one campaign and rejects a mismatched `campaign_id` argument, closing a prior gap where the client-supplied `campaign_id` on the newer admin tools (diary/contacts/finance/analytics/target-groups/lists) had no server-side check tying it to the calling bot. Per-campaign keys are only valid on `/api/mcp` itself, not other frank-ingest API routes. **This bot's `config.deploy.json` still uses the operator key** — migrating it to a campaign-scoped key is a deployment-config change (set `tools.mcpServers.frank-ingest.headers['x-api-key']` to the minted key), not yet done.
+- **Route auth**: admin operation routes use `requireCampaignAdminOrMachine` — sessionless requests (no Auth.js session cookie) that have passed the API key gate are trusted as machine clients. `*_by_user_id` DB columns are stored as `null` for machine-originated writes. This check is unaffected by the scope work above — enforcement now happens one layer up, inside the MCP server itself, before it ever calls these routes.
+- **Volunteer Telegram tools**: frank-ingest resolves the supplied Telegram ID to an app user before invoking shared trusted-user volunteer bot actions. Web volunteer chat does not use Telegram IDs; it uses Auth.js `session.user.id`. These tools also now respect the calling key's campaign scope on top of their existing per-call `campaign_admins`/`campaign_volunteers` check.
 
 ---
 
@@ -103,6 +103,10 @@ MCP server source: `frank-ingest/mcp/server.ts` and `frank-ingest/mcp/tools/`.
 ---
 
 ## Changelog
+
+### 2026-07-08 — Per-campaign API keys close a cross-campaign isolation gap
+- Investigated (at the user's request) how this bot stays scoped to its own campaign when the underlying frank-ingest MCP tools accept a client-supplied `campaign_id`. Found that the "admin operation" tools (diary/contacts/finance/field/analytics/target-groups/lists) had no server-side check binding a `campaign_id` argument to the calling bot — isolation depended entirely on `DEFAULT_CAMPAIGN_ID` and on the LLM never being steered toward a different campaign_id. Full writeup and fix in frank-ingest's `STATE.md` (2026-07-08 entry) — summary: frank-ingest's MCP server now resolves the incoming `x-api-key` to an operator-or-campaign scope and pins/rejects `campaign_id` accordingly; the currently-deployed `INGEST_API_KEY` is unaffected (still operator-scoped).
+- No nanobot code changes — this was entirely a frank-ingest MCP-server + `proxy.ts` change. Follow-up (not done yet): mint a campaign-scoped key with `scripts/create-campaign-key.mjs` in frank-ingest and swap `config.deploy.json`'s `x-api-key` to it, so this deployment gets the stronger guarantee instead of relying on `DEFAULT_CAMPAIGN_ID` alone.
 
 ### 2026-07-08 — Analytics, target groups, list generation
 - 8 new MCP tools (see "Analytics & targeting tools" above): `analyze_voters`, `analyze_results`, `list_target_groups`, `get_target_group`, `create_target_group`, `update_target_group`, `generate_lists`, `get_list_generation_job`.
